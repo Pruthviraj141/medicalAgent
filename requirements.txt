@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-dotenv
+requests
+chromadb
+sentence-transformers
+pymongo
+rank-bm25
+numpy
+scikit-learn
+transformers
+nltk
+pydantic
