@@ -24,6 +24,19 @@ def add_chunk(doc_id: str, text: str, metadata: dict | None = None):
     )
 
 
-def query_vector(embedding: list[float], n_results: int = 10):
-    """Query the collection by a pre-computed embedding vector."""
-    return collection.query(query_embeddings=[embedding], n_results=n_results)
+def query_vector(embedding: list[float], n_results: int = 10, where: dict | None = None):
+    """
+    Query the collection by a pre-computed embedding vector.
+
+    Parameters
+    ----------
+    embedding : list[float]
+    n_results : int
+    where : dict | None
+        Optional Chroma metadata filter, e.g. {"source": "book.json"}
+        or {"chunk_type": "treatment"}.
+    """
+    kwargs = {"query_embeddings": [embedding], "n_results": n_results}
+    if where:
+        kwargs["where"] = where
+    return collection.query(**kwargs)

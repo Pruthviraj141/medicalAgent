@@ -1,5 +1,6 @@
 """
 memory.py – short-term (RAM) + long-term (MongoDB) conversation memory
+             with automatic memory compression for efficiency.
 """
 import time
 import numpy as np
@@ -42,6 +43,10 @@ def get_short_memory(session_id: str) -> list[dict]:
     return SESSION_BUFFERS.get(session_id, [])
 
 
+def clear_short_memory(session_id: str):
+    SESSION_BUFFERS.pop(session_id, None)
+
+
 # ──────────────────────────────────────────────
 # Long-term memory (MongoDB)
 # ──────────────────────────────────────────────
@@ -64,3 +69,35 @@ def recall_long_memory(user_id: str, query: str, top_k: int = 5) -> list[dict]:
     sims = [(d, float(np.dot(q_emb, np.array(d["embedding"])))) for d in docs]
     sims.sort(key=lambda x: x[1], reverse=True)
     return [d for d, _ in sims[:top_k]]
+
+
+# ──────────────────────────────────────────────
+# Memory compression (summarise long histories)
+# ──────────────────────────────────────────────
+def compress_memory(session_id: str, user_id: str) -> str | None:
+    """
+    Summarise the current short-term buffer into a 2-sentence clinical note,
+    store it as long-term memory, and clear the short-term buffer.
+    Returns the summary text, or None if nothing to compress.
+    """
+    buf = get_short_memory(session_id)
+    if not buf:
+        return None
+
+    from app.llm_client import llm_generate
+
+    messages_text = "\n".join(f"{m['role']}: {m['text']}" for m in buf)
+    prompt = (
+        "Summarise the following patient conversation into a concise 2-sentence "
+        "clinical summary. Include key symptoms, conditions discussed, and any "
+        "recommendations given:\n\n" + messages_text
+    )
+    summary = llm_generate(prompt, temperature=0.0, max_tokens=100)
+
+    # store compressed summary as long-term memory
+    add_to_long_memory(user_id, "summary", summary)
+
+    # clear short-term buffer
+    clear_short_memory(session_id)
+
+    return summary

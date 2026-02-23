@@ -1,17 +1,37 @@
 """
-embedding.py – sentence-transformer BGE embeddings with L2-normalisation
+embedding.py – GPU/CPU-aware sentence-transformer BGE embeddings
+with L2-normalisation and batch support.
 """
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from app.config import EMBED_MODEL
-import numpy as np
+from app.device import get_device
 
-_model = SentenceTransformer(EMBED_MODEL)
+_device = get_device()
+_model = SentenceTransformer(EMBED_MODEL, device=_device)
+print(f"📐 Embedding model loaded on {_device}")
 
 
-def embed_text(texts):
-    """Return list[list[float]] for one or more input strings."""
+def embed_text(texts, batch_size: int = 64):
+    """
+    Embed one or more strings and return normalised vectors.
+
+    Parameters
+    ----------
+    texts : str | list[str]
+    batch_size : int – larger batches are faster on GPU.
+
+    Returns
+    -------
+    list[list[float]]
+    """
     if isinstance(texts, str):
         texts = [texts]
-    embs = _model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-    norms = np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9
-    return (embs / norms).tolist()
+    embs = _model.encode(
+        texts,
+        batch_size=batch_size,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+        normalize_embeddings=True,   # sentence-transformers does L2 internally
+    )
+    return embs.tolist()

@@ -1,13 +1,22 @@
+# ── core ──
 fastapi
-uvicorn
+uvicorn[standard]
 python-dotenv
-requests
+httpx
 chromadb
 sentence-transformers
-pymongo
+pymongo[srv]
 rank-bm25
 numpy
 scikit-learn
 transformers
 nltk
 pydantic
+torch
+
+# ── optional (uncomment for GPU / advanced features) ──
+# faiss-gpu          # or faiss-cpu on CPU-only machines
+# accelerate
+# bitsandbytes
+# optimum
+# redis
