@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MedBuddy – Your Medical Assistant</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Login Screen ── */
+  #login-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  }
+
+  .login-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 20px;
+    padding: 48px 40px;
+    width: 420px;
+    text-align: center;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.4);
+  }
+
+  .login-card .logo {
+    font-size: 48px;
+    margin-bottom: 8px;
+  }
+
+  .login-card h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 6px;
+  }
+
+  .login-card p {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 32px;
+  }
+
+  .login-card input {
+    width: 100%;
+    padding: 14px 18px;
+    border: 2px solid #334155;
+    border-radius: 12px;
+    background: #0f172a;
+    color: #f1f5f9;
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .login-card input:focus { border-color: #22d3ee; }
+
+  .login-card input::placeholder { color: #64748b; }
+
+  .login-card button {
+    width: 100%;
+    padding: 14px;
+    margin-top: 16px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #06b6d4, #0891b2);
+    color: white;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.2s;
+  }
+
+  .login-card button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 25px rgba(6, 182, 212, 0.3);
+  }
+
+  .login-card button:active { transform: translateY(0); }
+
+  .login-status {
+    margin-top: 16px;
+    font-size: 13px;
+    color: #94a3b8;
+    min-height: 20px;
+  }
+
+  .login-status.found { color: #34d399; }
+  .login-status.new-user { color: #fbbf24; }
+
+  /* ── Chat Screen ── */
+  #chat-screen { display: none; height: 100vh; flex-direction: column; }
+
+  .chat-header {
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+
+  .chat-header .avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #06b6d4, #0891b2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+  }
+
+  .chat-header .info h2 {
+    font-size: 17px;
+    font-weight: 600;
+    color: #f1f5f9;
+  }
+
+  .chat-header .info span {
+    font-size: 12px;
+    color: #22d3ee;
+  }
+
+  .chat-header .user-badge {
+    margin-left: auto;
+    background: #334155;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    color: #94a3b8;
+  }
+
+  .chat-header .user-badge strong { color: #e2e8f0; }
+
+  /* ── Messages ── */
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+
+  .messages::-webkit-scrollbar { width: 6px; }
+  .messages::-webkit-scrollbar-track { background: transparent; }
+  .messages::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+  .msg {
+    max-width: 75%;
+    padding: 14px 18px;
+    border-radius: 18px;
+    font-size: 15px;
+    line-height: 1.55;
+    word-wrap: break-word;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .msg.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #06b6d4, #0891b2);
+    color: white;
+    border-bottom-right-radius: 4px;
+  }
+
+  .msg.assistant {
+    align-self: flex-start;
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    border-bottom-left-radius: 4px;
+  }
+
+  .msg.system {
+    align-self: center;
+    background: transparent;
+    color: #64748b;
+    font-size: 13px;
+    padding: 8px 16px;
+    max-width: 90%;
+    text-align: center;
+  }
+
+  /* ── Typing indicator ── */
+  .typing {
+    align-self: flex-start;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 18px;
+    padding: 14px 20px;
+    display: none;
+  }
+
+  .typing .dots { display: flex; gap: 5px; }
+
+  .typing .dots span {
+    width: 8px;
+    height: 8px;
+    background: #64748b;
+    border-radius: 50%;
+    animation: bounce 1.4s infinite;
+  }
+
+  .typing .dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing .dots span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes bounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40% { transform: scale(1); opacity: 1; }
+  }
+
+  /* ── Input Area ── */
+  .input-area {
+    background: #1e293b;
+    border-top: 1px solid #334155;
+    padding: 16px 24px;
+    display: flex;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .input-area input {
+    flex: 1;
+    padding: 14px 18px;
+    border: 2px solid #334155;
+    border-radius: 14px;
+    background: #0f172a;
+    color: #f1f5f9;
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .input-area input:focus { border-color: #22d3ee; }
+  .input-area input::placeholder { color: #64748b; }
+
+  .input-area button {
+    padding: 14px 24px;
+    border: none;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #06b6d4, #0891b2);
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .input-area button:hover { transform: translateY(-1px); }
+  .input-area button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    .login-card { width: 90%; padding: 32px 24px; }
+    .msg { max-width: 88%; }
+    .input-area { padding: 12px 16px; }
+    .chat-header { padding: 12px 16px; }
+    .messages { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════ LOGIN SCREEN ═══════ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="logo">🩺</div>
+    <h1>MedBuddy</h1>
+    <p>Your AI Medical Assistant — tell me your name to get started</p>
+    <input type="text" id="name-input" placeholder="Enter your name..." autofocus>
+    <button id="start-btn" onclick="handleLogin()">Start Chat →</button>
+    <div class="login-status" id="login-status"></div>
+  </div>
+</div>
+
+<!-- ═══════ CHAT SCREEN ═══════ -->
+<div id="chat-screen">
+  <div class="chat-header">
+    <div class="avatar">🩺</div>
+    <div class="info">
+      <h2>MedBuddy</h2>
+      <span>● Online — ready to help</span>
+    </div>
+    <div class="user-badge">
+      👤 <strong id="header-name"></strong>
+    </div>
+  </div>
+
+  <div class="messages" id="messages">
+    <!-- Messages appear here -->
+  </div>
+
+  <div class="typing" id="typing-indicator">
+    <div class="dots"><span></span><span></span><span></span></div>
+  </div>
+
+  <div class="input-area">
+    <input type="text" id="msg-input" placeholder="Describe your symptoms..." autofocus>
+    <button id="send-btn" onclick="sendMessage()">Send ➤</button>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let userId = "";
+let userName = "";
+const SESSION_ID = "test_session";
+
+// ── Login ──
+const nameInput = document.getElementById("name-input");
+nameInput.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
+
+// Live search as user types
+let searchTimeout;
+nameInput.addEventListener("input", () => {
+  clearTimeout(searchTimeout);
+  const name = nameInput.value.trim();
+  if (name.length < 2) {
+    document.getElementById("login-status").textContent = "";
+    return;
+  }
+  searchTimeout = setTimeout(async () => {
+    try {
+      const res = await fetch(`${API}/find_user/${encodeURIComponent(name)}`);
+      const data = await res.json();
+      const status = document.getElementById("login-status");
+      if (data.status === "found") {
+        status.textContent = `✅ Welcome back, ${data.user.name}!`;
+        status.className = "login-status found";
+      } else {
+        status.textContent = `✨ New here? We'll create your profile!`;
+        status.className = "login-status new-user";
+      }
+    } catch (_) {}
+  }, 400);
+});
+
+async function handleLogin() {
+  const name = nameInput.value.trim();
+  if (!name) { nameInput.focus(); return; }
+
+  const btn = document.getElementById("start-btn");
+  btn.disabled = true;
+  btn.textContent = "Connecting...";
+
+  try {
+    // Try to find existing user
+    const findRes = await fetch(`${API}/find_user/${encodeURIComponent(name)}`);
+    const findData = await findRes.json();
+
+    if (findData.status === "found") {
+      userId = findData.user.user_id;
+      userName = findData.user.name;
+    } else {
+      // Create new user with name as ID (lowercase, no spaces)
+      userId = name.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+      userName = name;
+      await fetch(`${API}/user`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, name: userName })
+      });
+    }
+
+    // Switch to chat screen
+    document.getElementById("login-screen").style.display = "none";
+    const chatScreen = document.getElementById("chat-screen");
+    chatScreen.style.display = "flex";
+    document.getElementById("header-name").textContent = userName;
+
+    // Load previous conversation if any
+    await loadHistory();
+
+    // Welcome message
+    if (document.querySelectorAll(".msg").length === 0) {
+      addMessage("system", `Hi ${userName}! 👋 I'm MedBuddy, your medical assistant. Tell me how you're feeling and I'll do my best to help.`);
+    }
+
+    document.getElementById("msg-input").focus();
+
+  } catch (err) {
+    document.getElementById("login-status").textContent = "❌ Cannot connect to server. Is it running?";
+    document.getElementById("login-status").className = "login-status";
+    btn.disabled = false;
+    btn.textContent = "Start Chat →";
+  }
+}
+
+// ── Load conversation history from Firebase ──
+async function loadHistory() {
+  try {
+    const res = await fetch(`${API}/conversation/${userId}/${SESSION_ID}`);
+    const data = await res.json();
+    if (data.messages && data.messages.length > 0) {
+      addMessage("system", `📜 Loaded ${data.messages.length} previous messages`);
+      data.messages.forEach(m => {
+        addMessage(m.role === "user" ? "user" : "assistant", m.text, true);
+      });
+    }
+  } catch (_) {}
+}
+
+// ── Send Message ──
+const msgInput = document.getElementById("msg-input");
+msgInput.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) sendMessage(); });
+
+async function sendMessage() {
+  const text = msgInput.value.trim();
+  if (!text) return;
+
+  addMessage("user", text);
+  msgInput.value = "";
+  msgInput.focus();
+
+  const sendBtn = document.getElementById("send-btn");
+  sendBtn.disabled = true;
+  showTyping(true);
+
+  try {
+    const res = await fetch(`${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: SESSION_ID,
+        user_id: userId,
+        question: text
+      })
+    });
+    const data = await res.json();
+
+    showTyping(false);
+
+    if (data.status === "success") {
+      addMessage("assistant", data.response_text);
+    } else {
+      addMessage("assistant", "Sorry, I had trouble processing that. Could you try asking again?");
+    }
+  } catch (err) {
+    showTyping(false);
+    addMessage("assistant", "⚠️ Connection error. Please check if the server is running.");
+  }
+
+  sendBtn.disabled = false;
+}
+
+// ── UI Helpers ──
+function addMessage(role, text, isHistory = false) {
+  const container = document.getElementById("messages");
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  if (isHistory) div.style.animation = "none";
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function showTyping(show) {
+  const el = document.getElementById("typing-indicator");
+  el.style.display = show ? "block" : "none";
+  if (show) {
+    const container = document.getElementById("messages");
+    container.scrollTop = container.scrollHeight;
+  }
+}
+</script>
+</body>
+</html>

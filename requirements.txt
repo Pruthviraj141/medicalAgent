@@ -5,7 +5,7 @@ python-dotenv
 httpx
 chromadb
 sentence-transformers
-pymongo[srv]
+firebase-admin
 rank-bm25
 numpy
 scikit-learn

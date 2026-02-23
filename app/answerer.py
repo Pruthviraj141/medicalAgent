@@ -1,6 +1,6 @@
 """
-answerer.py – compose the final friendly-doctor answer with confidence,
-               follow-ups, source attribution, and verification.
+answerer.py – compose the final friendly-doctor answer with natural conversation,
+               follow-ups, source attribution, and memory awareness.
 """
 import re
 from app.retriever import hybrid_retrieve
@@ -18,16 +18,12 @@ from app.cache import cache_get, cache_set
 def _extract_book_sources(candidates: list[tuple]) -> list[str]:
     """
     Pull plant names from book.json candidate IDs for source attribution.
-
-    Book chunk IDs look like: ``book::plant_3::treat_2``
-    The chunk text starts with "Plant: <name> | Botanical name: …"
     """
     sources: list[str] = []
     seen: set[str] = set()
     for doc_id, text, _score in candidates:
         if not doc_id.startswith("book::"):
             continue
-        # extract plant name from the text header
         m = re.match(r"Plant:\s*(.+?)\s*\|", text)
         if m:
             name = m.group(1).strip()
@@ -37,98 +33,123 @@ def _extract_book_sources(candidates: list[tuple]) -> list[str]:
     return sources
 
 
-def _verify_answer(answer: str, sources: list[str]) -> str:
+def _build_conversation_context(short_ctx: list[dict]) -> str:
     """
-    Quick heuristic: if the answer doesn't reference any source content,
-    prepend a low-confidence warning.
+    Format conversation history as a natural chat log so the LLM
+    understands the flow and can reference prior details.
     """
-    source_text = " ".join(sources).lower()
-    answer_lower = answer.lower()
+    if not short_ctx:
+        return ""
 
-    # check if at least one meaningful keyword from sources appears in answer
-    keywords = [w for w in source_text.split() if len(w) > 5][:20]
-    overlap = sum(1 for kw in keywords if kw in answer_lower)
+    lines = []
+    for msg in short_ctx[-8:]:  # last 8 messages max for context window
+        role = "Patient" if msg["role"] == "user" else "You"
+        lines.append(f"{role}: {msg['text']}")
 
-    if keywords and overlap < 2:
-        return (
-            "⚠️ **LOW CONFIDENCE** — My answer may not be fully supported "
-            "by the medical sources I found. Please verify with a doctor.\n\n"
-            + answer
+    return "\n".join(lines)
+
+
+def _build_prompt(question: str, conversation_history: str,
+                  top_texts: list[str], long_texts: list[str],
+                  book_sources: list[str], is_first_message: bool) -> str:
+    """
+    Build a natural, context-aware prompt that produces human-like responses.
+    """
+    parts: list[str] = []
+
+    # conversation history (most important for continuity)
+    if conversation_history:
+        parts.append(
+            f"Previous conversation:\n{conversation_history}"
         )
-    return answer
+
+    # long-term memory (past sessions)
+    if long_texts:
+        parts.append(
+            "What you remember about this patient from past visits:\n"
+            + "\n".join(f"- {t}" for t in long_texts[:3])
+        )
+
+    # retrieved medical evidence
+    if top_texts:
+        parts.append(
+            "Medical knowledge to base your answer on:\n"
+            + "\n---\n".join(top_texts)
+        )
+
+    # Ayurvedic sources
+    if book_sources:
+        parts.append(
+            "Ayurvedic remedies available: " + ", ".join(book_sources)
+            + "\n(Mention these naturally if relevant — include the plant name and how to use it)"
+        )
+
+    context = "\n\n".join(parts)
+
+    # different instruction based on conversation stage
+    if is_first_message:
+        instruction = (
+            "This is the patient's FIRST message. Respond warmly, give an initial assessment, "
+            "and ask 1-2 caring follow-up questions to understand their situation better "
+            "(like 'How long have you been feeling this way?' or 'Is the pain sharp or dull?')."
+        )
+    else:
+        instruction = (
+            "Continue the conversation naturally. Reference what the patient told you before. "
+            "Build on previous information. Give a more specific assessment now that you know more. "
+            "If you have enough info, give clear advice. Ask ONE more follow-up only if needed."
+        )
+
+    return f"""Patient says: "{question}"
+
+{context}
+
+{instruction}
+
+Respond as a caring doctor friend — natural, warm, 4-6 sentences. No bullet lists, no headers, no confidence scores."""
 
 
 async def compose_answer_async(session_id: str, user_id: str, question: str):
     """
     Full async pipeline:
-    1. Gather short-term conversation memory
+    1. Check conversation history (is this first message?)
     2. Hybrid retrieve (vector + BM25 + rerank)
     3. Recall relevant long-term memory
-    4. Build a structured prompt → LLM (async)
-    5. Verify answer against sources
-    6. Store conversation turn in both memory stores
+    4. Build natural conversation prompt → LLM (async)
+    5. Store conversation turn in both memory stores
     """
     final_docs = PROFILE["final_context_docs"]
 
-    # 1) short-term memory
+    # 1) conversation history
     short_ctx = get_short_memory(session_id)
-    short_text = "\n".join(f"{m['role']}: {m['text']}" for m in short_ctx)
+    conversation_history = _build_conversation_context(short_ctx)
+    is_first_message = len(short_ctx) == 0
 
     # 2) hybrid retrieval
     candidates = hybrid_retrieve(question)
     top_texts = [t[1] for t in candidates[:final_docs]]
 
-    # 3) long-term memory
+    # 3) long-term memory (past sessions with this user)
     long_mem = recall_long_memory(user_id, question, top_k=3)
     long_texts = [lm["text"] for lm in long_mem]
 
-    # 4) build context blocks
-    context_blocks: list[str] = []
-    if short_text:
-        context_blocks.append("Conversation so far:\n" + short_text)
-    if long_texts:
-        context_blocks.append("Relevant patient memory:\n" + "\n".join(long_texts))
-    if top_texts:
-        context_blocks.append(
-            "Retrieved medical evidence (short excerpts):\n" + "\n---\n".join(top_texts)
-        )
-
-    # extract Ayurvedic book sources for attribution
+    # 4) build natural prompt
     book_sources = _extract_book_sources(candidates[:final_docs])
-    if book_sources:
-        context_blocks.append(
-            "Ayurvedic plant sources referenced: " + ", ".join(book_sources)
-        )
-
-    context = "\n\n".join(context_blocks)
-
-    prompt_user = f"""
-Question: {question}
-
-Medical context:
-{context}
-
-Answer concisely (5-6 lines max):
-- If Ayurvedic/herbal treatments are found, include the plant name, ailment, and specific treatment details
-- Possible condition(s) with brief reasoning
-- Confidence % and recommended action
-- One follow-up question if needed
-- Always mention the plant source when citing Ayurvedic remedies
-"""
+    prompt_text = _build_prompt(
+        question, conversation_history, top_texts,
+        long_texts, book_sources, is_first_message
+    )
 
     response = await llm_generate_async(
-        [{"role": "user", "content": prompt_user}],
+        [{"role": "user", "content": prompt_text}],
         temperature=PROFILE["llm_temperature"],
         max_tokens=PROFILE["llm_max_tokens"],
     )
 
-    # 5) verify against sources
-    response = _verify_answer(response, top_texts)
-
-    # 6) store conversation
-    add_to_short_memory(session_id, "user", question)
+    # 5) store conversation in memory
+    add_to_short_memory(session_id, "user", question, user_id=user_id)
     add_to_long_memory(user_id, "user", question)
-    add_to_short_memory(session_id, "assistant", response)
+    add_to_short_memory(session_id, "assistant", response, user_id=user_id)
     add_to_long_memory(user_id, "assistant", response)
 
     return response, candidates
@@ -140,9 +161,10 @@ def compose_answer(session_id: str, user_id: str, question: str):
     """
     final_docs = PROFILE["final_context_docs"]
 
-    # 1) short-term memory
+    # 1) conversation history
     short_ctx = get_short_memory(session_id)
-    short_text = "\n".join(f"{m['role']}: {m['text']}" for m in short_ctx)
+    conversation_history = _build_conversation_context(short_ctx)
+    is_first_message = len(short_ctx) == 0
 
     # 2) hybrid retrieval
     candidates = hybrid_retrieve(question)
@@ -152,53 +174,23 @@ def compose_answer(session_id: str, user_id: str, question: str):
     long_mem = recall_long_memory(user_id, question, top_k=3)
     long_texts = [lm["text"] for lm in long_mem]
 
-    # 4) build context blocks
-    context_blocks: list[str] = []
-    if short_text:
-        context_blocks.append("Conversation so far:\n" + short_text)
-    if long_texts:
-        context_blocks.append("Relevant patient memory:\n" + "\n".join(long_texts))
-    if top_texts:
-        context_blocks.append(
-            "Retrieved medical evidence (short excerpts):\n" + "\n---\n".join(top_texts)
-        )
-
-    # extract Ayurvedic book sources for attribution
+    # 4) build natural prompt
     book_sources = _extract_book_sources(candidates[:final_docs])
-    if book_sources:
-        context_blocks.append(
-            "Ayurvedic plant sources referenced: " + ", ".join(book_sources)
-        )
-
-    context = "\n\n".join(context_blocks)
-
-    prompt_user = f"""
-Question: {question}
-
-Medical context:
-{context}
-
-Answer concisely (5-6 lines max):
-- If Ayurvedic/herbal treatments are found, include the plant name, ailment, and specific treatment details
-- Possible condition(s) with brief reasoning
-- Confidence % and recommended action
-- One follow-up question if needed
-- Always mention the plant source when citing Ayurvedic remedies
-"""
+    prompt_text = _build_prompt(
+        question, conversation_history, top_texts,
+        long_texts, book_sources, is_first_message
+    )
 
     response = llm_generate(
-        [{"role": "user", "content": prompt_user}],
+        [{"role": "user", "content": prompt_text}],
         temperature=PROFILE["llm_temperature"],
         max_tokens=PROFILE["llm_max_tokens"],
     )
 
-    # 5) verify against sources
-    response = _verify_answer(response, top_texts)
-
-    # 6) store conversation
-    add_to_short_memory(session_id, "user", question)
+    # 5) store conversation
+    add_to_short_memory(session_id, "user", question, user_id=user_id)
     add_to_long_memory(user_id, "user", question)
-    add_to_short_memory(session_id, "assistant", response)
+    add_to_short_memory(session_id, "assistant", response, user_id=user_id)
     add_to_long_memory(user_id, "assistant", response)
 
     return response, candidates
