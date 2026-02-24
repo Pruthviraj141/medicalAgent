@@ -18,6 +18,10 @@ from app.device import gpu_info
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Startup: init Firebase + auto-ingest data so RAG works immediately."""
+    print("=" * 50)
+    print("🚀 Starting MedBuddy server...")
+    print("=" * 50)
+
     # Firebase
     try:
         from app.firebase_client import db as _fb_db  # noqa: F401
@@ -28,12 +32,41 @@ async def lifespan(application: FastAPI):
     # Auto-ingest: ensure vector store + BM25 are populated
     from app.chroma_client import collection
     from app.bm25_index import bm25_index
+
     doc_count = collection.count()
     if doc_count == 0:
         print("📥 No data in vector store — running auto-ingest...")
         ingest_all()
     else:
-        print(f"📦 Vector store has {doc_count} chunks — skipping ingest.")
+        print(f"📦 Vector store has {doc_count} chunks.")
+
+        # ── check for missing text files and ingest them ──
+        _existing_meta = collection.get(include=["metadatas"])
+        _sources = {m.get("source") for m in _existing_meta["metadatas"] if m}
+        print(f"  📋 Sources present: {_sources}")
+
+        # Check if any .txt/.md files in data/ are missing from vector store
+        from app.ingest import DATA_DIR, _ingest_text_files, _ingest_book_json
+        import os
+        data_txt_files = {
+            f for f in os.listdir(DATA_DIR)
+            if f.lower().endswith((".txt", ".md"))
+        }
+        missing_txt = data_txt_files - _sources
+        if missing_txt:
+            print(f"📥 Missing text files detected: {missing_txt} — ingesting now...")
+            n = _ingest_text_files()
+            if n:
+                bm25_index.build()
+                print(f"✅ Text files ingested: {n} chunks")
+
+        if "book.json" not in _sources:
+            print("📥 Ayurvedic book not found in vector store — ingesting now...")
+            book_n = _ingest_book_json()
+            if book_n:
+                bm25_index.build()
+                print(f"✅ Ayurvedic book ingested: {book_n} chunks")
+
         # Rebuild BM25 from Chroma so keyword search works after restart
         if bm25_index.bm25 is None:
             print("🔄 Rebuilding BM25 index from vector store...")
@@ -42,6 +75,10 @@ async def lifespan(application: FastAPI):
                 bm25_index.add(doc_id, doc_text)
             bm25_index.build()
             print(f"✅ BM25 index rebuilt with {len(all_docs['ids'])} docs")
+
+    print("=" * 50)
+    print("✅ MedBuddy ready at http://127.0.0.1:8000/chat")
+    print("=" * 50)
 
     yield  # ← app is running
     print("👋 Shutting down MedBuddy")
@@ -111,21 +148,65 @@ def root():
 
 
 @app.post("/ingest")
-def run_ingest():
-    """Read all files in data/ and push chunks to Chroma + BM25."""
-    ingest_all()
-    return {"status": "ok", "detail": "Data ingested into vector store & BM25 index."}
+def run_ingest(source: str = "all", force: bool = False):
+    """
+    Re-ingest data into vector store & BM25.
+
+    Query params:
+      source: "all" | "text" | "book"
+      force:  if true, clear vector store first then re-ingest
+
+    Examples:
+      POST /ingest              → smart ingest (only missing sources)
+      POST /ingest?force=true   → full re-ingest (clears + rebuilds)
+      POST /ingest?source=text  → only .txt/.md files
+      POST /ingest?source=book  → only book.json
+    """
+    from app.ingest import _ingest_text_files, _ingest_book_json
+    from app.chroma_client import collection as _col
+    from app.bm25_index import bm25_index as _bm25
+
+    if force:
+        # Clear everything for full re-ingest
+        existing = _col.count()
+        if existing > 0:
+            all_data = _col.get()
+            if all_data["ids"]:
+                BATCH = 500
+                for b in range(0, len(all_data["ids"]), BATCH):
+                    end = min(b + BATCH, len(all_data["ids"]))
+                    _col.delete(ids=all_data["ids"][b:end])
+            # Reset BM25
+            _bm25.docs.clear()
+            _bm25.doc_ids.clear()
+            _bm25.tokenized.clear()
+            _bm25.bm25 = None
+
+    count = 0
+    if source in ("all", "text"):
+        count += _ingest_text_files()
+    if source in ("all", "book"):
+        count += _ingest_book_json()
+    _bm25.build()
+    return {
+        "status": "ok",
+        "source": source,
+        "force": force,
+        "chunks_added": count,
+        "total_in_store": _col.count(),
+        "detail": f"Ingested {count} chunks from '{source}' into vector store & BM25 index.",
+    }
 
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-    """Main Q&A endpoint – async, returns friendly medical answer + follow-ups + sources."""
-    response_text, candidates = await compose_answer_async(
+    """Main Q&A endpoint – async, returns structured diagnostic JSON."""
+    structured, candidates = await compose_answer_async(
         req.session_id, req.user_id, req.question
     )
     return {
         "status": "success",
-        "response_text": response_text,
+        **structured,
         "candidates_count": len(candidates),
     }
 

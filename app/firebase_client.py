@@ -35,6 +35,26 @@ db = firestore.client()
 print("✅ Firebase Firestore connected (project: meddy-database)")
 
 
+def _sanitize_doc(d: dict) -> dict:
+    """Convert Firestore-specific types (timestamps, Sentinels) to JSON-safe values."""
+    from google.protobuf.timestamp_pb2 import Timestamp  # noqa: F811
+    clean = {}
+    for k, v in d.items():
+        if v is None:
+            clean[k] = None
+        elif hasattr(v, 'isoformat'):          # DatetimeWithNanoseconds / datetime
+            clean[k] = v.isoformat()
+        elif type(v).__name__ == 'Sentinel':    # firestore.SERVER_TIMESTAMP before write
+            clean[k] = None
+        elif isinstance(v, dict):
+            clean[k] = _sanitize_doc(v)
+        elif isinstance(v, list):
+            clean[k] = [_sanitize_doc(i) if isinstance(i, dict) else i for i in v]
+        else:
+            clean[k] = v
+    return clean
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Users
 # ──────────────────────────────────────────────────────────────────────
@@ -46,7 +66,10 @@ def create_user(user_id: str, name: str = "") -> dict:
         "created_at": firestore.SERVER_TIMESTAMP,
     }
     doc_ref.set(data, merge=True)
-    return {"user_id": user_id, **data}
+    # Read back so we get the real timestamp, not the Sentinel
+    saved = doc_ref.get().to_dict()
+    saved["user_id"] = user_id
+    return _sanitize_doc(saved)
 
 
 def get_user(user_id: str) -> dict | None:
@@ -55,7 +78,7 @@ def get_user(user_id: str) -> dict | None:
     if doc.exists:
         d = doc.to_dict()
         d["user_id"] = doc.id
-        return d
+        return _sanitize_doc(d)
     return None
 
 
@@ -72,7 +95,7 @@ def list_all_users() -> list[dict]:
     for doc in docs:
         d = doc.to_dict()
         d["user_id"] = doc.id
-        result.append(d)
+        result.append(_sanitize_doc(d))
     return result
 
 
@@ -101,7 +124,9 @@ def create_session(user_id: str, session_id: str) -> dict:
         "last_active": firestore.SERVER_TIMESTAMP,
     }
     doc_ref.set(data, merge=True)
-    return {"session_id": session_id, **data}
+    saved = doc_ref.get().to_dict()
+    saved["session_id"] = session_id
+    return _sanitize_doc(saved)
 
 
 def get_sessions(user_id: str) -> list[dict]:
@@ -117,7 +142,7 @@ def get_sessions(user_id: str) -> list[dict]:
     for doc in docs:
         d = doc.to_dict()
         d["session_id"] = doc.id
-        result.append(d)
+        result.append(_sanitize_doc(d))
     return result
 
 

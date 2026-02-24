@@ -1,9 +1,11 @@
 """
 retriever.py – Hybrid retriever (Chroma + BM25) with multi-query expansion,
-               re-ranking, and auto-tuned profile parameters (GPU/CPU).
+               re-ranking, symptom-aware Merck retrieval, and auto-tuned
+               profile parameters (GPU/CPU).
 
-Includes a secondary Ayurvedic book retrieval pass to boost
-structured treatment chunks when relevant.
+Includes secondary retrieval passes for:
+  • Ayurvedic book treatment chunks
+  • Merck Manual (general + targeted symptom/diagnosis/treatment sections)
 """
 from app.embedding import embed_text
 from app.chroma_client import query_vector
@@ -12,6 +14,43 @@ from app.reranker import rerank_candidates
 from app.llm_client import llm_generate
 from app.profiles import PROFILE
 from app.cache import cache_get, cache_set
+
+
+# ── symptom / query-type detection ────────────────────────────────────
+_SYMPTOM_WORDS = {
+    "pain", "ache", "fever", "cough", "nausea", "vomiting", "headache",
+    "burning", "itching", "swelling", "bleeding", "diarrhea", "constipation",
+    "dizzy", "dizziness", "tired", "fatigue", "weakness", "sore", "rash",
+    "throat", "stomach", "chest", "back", "joint", "cramp", "numbness",
+    "tingling", "breathless", "palpitation", "bloating", "gas", "sneeze",
+    "congestion", "chills", "weight loss", "weight gain", "loss of appetite",
+    "blurred vision", "anxiety", "insomnia", "heartburn", "acid",
+    "inflammation", "stiffness", "bruise", "fracture", "spasm",
+    "difficulty swallowing", "shortness of breath", "runny nose",
+    "abdominal", "muscle", "bone", "skin", "eye", "ear",
+}
+_SYMPTOM_PHRASES = [
+    "i feel", "i have", "i'm having", "i am having",
+    "i've been feeling", "i've been having", "i noticed",
+    "it started", "woke up with", "suffering from",
+    "hurts", "hurt", "uncomfortable", "discomfort",
+    "my head", "my stomach", "my chest", "my back",
+    "keeps happening", "getting worse", "won't go away",
+]
+
+
+def detect_query_type(question: str) -> str:
+    """Classify a question as 'symptoms', 'diagnosis', 'treatment', or 'general'."""
+    q = question.lower()
+    if any(p in q for p in _SYMPTOM_PHRASES) or sum(1 for w in _SYMPTOM_WORDS if w in q) >= 1:
+        return "symptoms"
+    if any(k in q for k in ("what disease", "what condition", "diagnose", "diagnosis",
+                            "what do i have", "what's wrong", "could it be", "what causes")):
+        return "diagnosis"
+    if any(k in q for k in ("how to treat", "treatment", "medicine", "medication",
+                            "cure", "remedy", "what should i take", "how to get rid")):
+        return "treatment"
+    return "general"
 
 
 def generate_multi_queries(user_question: str, n: int | None = None) -> list[str]:
@@ -30,9 +69,9 @@ def generate_multi_queries(user_question: str, n: int | None = None) -> list[str
 
 def hybrid_retrieve(user_question: str, top_k: int | None = None):
     """
-    1. Generate multi-queries via LLM
+    1. Classify the query (symptoms / diagnosis / treatment / general)
     2. Retrieve from Chroma (vector) + BM25 (keyword)
-    3. **Bonus pass**: retrieve from book.json treatment chunks specifically
+    3. **Bonus passes**: Ayurvedic book + Merck (general & section-targeted)
     4. Combine & normalise scores
     5. Re-rank with cross-encoder (top_k controlled by profile)
     """
@@ -40,20 +79,20 @@ def hybrid_retrieve(user_question: str, top_k: int | None = None):
         top_k = PROFILE["rerank_top_k"]
 
     per_query_k = PROFILE["candidate_per_query"]
+    query_type = detect_query_type(user_question)
 
     # check cache
     cached = cache_get("retrieve", user_question)
     if cached is not None:
         return cached
 
-    # speed optimisation: skip multi-query LLM call, use direct question
     queries = [user_question]
-
     candidate_map: dict[str, dict] = {}
 
     for q in queries:
-        # --- vector retrieval (all sources) ---
         emb = embed_text(q)[0]
+
+        # --- 1. vector retrieval (all sources) ---
         vec_res = query_vector(emb, n_results=per_query_k)
         for doc_id, doc_text in zip(vec_res["ids"][0], vec_res["documents"][0]):
             if doc_id not in candidate_map:
@@ -62,10 +101,7 @@ def hybrid_retrieve(user_question: str, top_k: int | None = None):
                 }
             candidate_map[doc_id]["vec_score"] += 1.0
 
-        # --- targeted book treatment retrieval ---
-        # fetch treatment chunks from the Ayurvedic book specifically
-        # this ensures structured herbal remedies surface even when
-        # the general corpus is large
+        # --- 2. targeted Ayurvedic book retrieval ---
         try:
             book_res = query_vector(
                 emb,
@@ -77,12 +113,27 @@ def hybrid_retrieve(user_question: str, top_k: int | None = None):
                     candidate_map[doc_id] = {
                         "text": doc_text, "vec_score": 0.0, "bm25_score": 0.0,
                     }
-                # give a slight boost (0.5) so book results compete fairly
                 candidate_map[doc_id]["vec_score"] += 0.5
         except Exception:
-            pass  # gracefully degrade if no book data ingested yet
+            pass
 
-        # --- BM25 retrieval ---
+        # --- 3. targeted Merck Manual retrieval ---
+        try:
+            merck_res = query_vector(
+                emb,
+                n_results=min(per_query_k, 15),
+                where={"source": "The_Merck_clean.txt"},
+            )
+            for doc_id, doc_text in zip(merck_res["ids"][0], merck_res["documents"][0]):
+                if doc_id not in candidate_map:
+                    candidate_map[doc_id] = {
+                        "text": doc_text, "vec_score": 0.0, "bm25_score": 0.0,
+                    }
+                candidate_map[doc_id]["vec_score"] += 0.6
+        except Exception:
+            pass
+
+        # --- 4. BM25 keyword retrieval ---
         for doc_id, text, score in bm25_index.search(q, per_query_k):
             if doc_id not in candidate_map:
                 candidate_map[doc_id] = {
@@ -104,7 +155,6 @@ def hybrid_retrieve(user_question: str, top_k: int | None = None):
     # --- cross-encoder re-rank ---
     result = rerank_candidates(user_question, items_sorted)
 
-    # cache result (TTL 10 min)
     try:
         cache_set("retrieve", user_question, result, ttl=600)
     except Exception:

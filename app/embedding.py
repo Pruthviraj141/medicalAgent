@@ -1,6 +1,6 @@
 """
 embedding.py – GPU/CPU-aware sentence-transformer BGE embeddings
-with L2-normalisation and batch support.
+with L2-normalisation and fast batch support.
 """
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -31,7 +31,7 @@ def embed_text(texts, batch_size: int = 64):
         texts,
         batch_size=batch_size,
         convert_to_numpy=True,
-        show_progress_bar=False,
+        show_progress_bar=len(texts) > 100,
         normalize_embeddings=True,   # sentence-transformers does L2 internally
     )
     return embs.tolist()
